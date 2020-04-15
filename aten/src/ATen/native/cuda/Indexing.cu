@@ -335,7 +335,7 @@ __global__ void indexAddSmallIndex(cuda::detail::TensorInfo<T, IndexType> dst,
           cuda::detail::IndexToOffset<T, IndexType, SrcDim>::get(linearIndex, src);
       srcOffset += srcIndex * src.strides[srcAddDim];
 
-      dst.data[dstOffset] += src.data[srcOffset];
+      gpuAtomicAdd(&dst.data[dstOffset], src.data[srcOffset]);
     }
   }
 }
@@ -356,35 +356,27 @@ __global__ void indexAddLargeIndex(cuda::detail::TensorInfo<T, IndexType> dst,
                                    IndexType totalSize,
                                    IndexType innerSize,
                                    int64_t dstAddDimSize) {
-  // We stride over the output including the indexed dimension
-  // (totalSize), and calculate the destination index point based on that
-  for (IndexType linearIndex = blockIdx.x * blockDim.x + threadIdx.x;
-       linearIndex < totalSize;
-       linearIndex += gridDim.x * blockDim.x) {
-    IndexType srcIndex, elementInSlice;
-    if (IndexIsMajor) {
-      srcIndex = linearIndex / innerSize;
-      elementInSlice = linearIndex % innerSize;
+    for (IndexType srcIndex = 0; srcIndex < indices.sizes[0]; ++srcIndex) {
+      // Lua indices begin at 1
+      IndexType dstIndex =
+          indices.data[cuda::detail::IndexToOffset<int64_t, IndexType, IdxDim>::get(srcIndex, indices)];
+      CUDA_KERNEL_ASSERT(dstIndex < dstAddDimSize);
+
+      // We stride over the output ignoring the indexed dimension
+      // (innerSize), whose offset calculation is handled differently
+      for (IndexType linearIndex = blockIdx.x * blockDim.x + threadIdx.x;
+           linearIndex < innerSize;
+           linearIndex += gridDim.x * blockDim.x) {
+        IndexType dstOffset =
+            cuda::detail::IndexToOffset<T, IndexType, DstDim>::get(linearIndex, dst);
+        dstOffset += dstIndex * dst.strides[dstAddDim];
+
+        IndexType srcOffset =
+            cuda::detail::IndexToOffset<T, IndexType, SrcDim>::get(linearIndex, src);
+        srcOffset += srcIndex * src.strides[srcAddDim];
+
+        gpuAtomicAdd(&dst.data[dstOffset], src.data[srcOffset]);
     }
-    else {
-      elementInSlice = linearIndex / innerSize;
-      srcIndex = linearIndex % innerSize;
-    }
-
-    // Lua indices begin at 1
-    IndexType dstIndex =
-        indices.data[cuda::detail::IndexToOffset<int64_t, IndexType, IdxDim>::get(srcIndex, indices)];
-    CUDA_KERNEL_ASSERT(dstIndex < dstAddDimSize);
-
-    IndexType dstOffset =
-      cuda::detail::IndexToOffset<T, IndexType, DstDim>::get(elementInSlice, dst);
-    dstOffset += dstIndex * dst.strides[dstAddDim];
-
-    IndexType srcOffset =
-      cuda::detail::IndexToOffset<T, IndexType, SrcDim>::get(elementInSlice, src);
-    srcOffset += srcIndex * src.strides[srcAddDim];
-
-    dst.data[dstOffset] += src.data[srcOffset];
   }
 }
 
